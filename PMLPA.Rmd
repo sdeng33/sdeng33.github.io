@@ -1,0 +1,330 @@
+---
+title: "Practical Machine Learning Prediction Assignment"
+author: "Seng-Shi Deng"
+date: "10/25/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/y2kyn/OneDrive/Desktop/Coursera/Practical Machine Learning/Prediction Assignment")
+```
+
+## Overview
+Nowadays, people can now collect a large amount of personal activity data rather 
+inexpensively.  Most of the time, measurements are being used to quantify how 
+much of an activity is being done.  However, almost no consideration is given to 
+how well an activity is being performed.  The goal of this project will be to 
+use data from accelerometers on the belt, forearm, and dumbbells of 6 
+participants who were asked to perform barbell lifts correctly and incorrectly 
+in 5 different ways.  The goal of this project is to predict the manner in which 
+they did the exercise.
+
+**Note**: More information on the research done for the activities referenced above 
+can be found at: Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. 
+_Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th 
+International Conference in Cooperation with SIGCHI (Augmented Human '13)_. 
+Stuttgart, Germany: ACM SIGCHI, 2013.
+
+## Initial Processes
+This section includes all the code that is needed before the Loading and 
+Preprocessing section of the project, to include loading the necessary 
+libraries, checking/creating a folder, setting up parallel processing, and a 
+working directory, checking for the existence of the training and testing data 
+in question.  If they do not, they are downloaded accordingly.  In addition,
+the data are read and two data frame objects are created.
+
+```{r preliminary process, message = FALSE}
+library(caret)
+library(doParallel)
+library(parallel)
+library(rattle)
+library(rpart)
+library(scales)
+
+# Initiate cluster #
+cl <- makeCluster(detectCores(), type='PSOCK')
+
+# Register the cluster #
+registerDoParallel(cl)
+
+# Checks to see if the data set folder exists in the working directory #
+if(!file.exists("WLE Dataset")){
+        dir.create("WLE Dataset")
+}
+
+# Sets the working directory to the new path #
+setwd("./WLE Dataset")
+
+# URLs of each of the data sets used #
+trng_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+tstng_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# A character vector of the URLs of each of the datasets used #
+ds_paths <- c(trng_url, tstng_url)
+
+# Name of the files for each of the data sets used #
+trng_ds <-"pml-training.csv"
+tstng_ds <- "pml-testing.csv"
+
+# A character vector of the name of the files of each of the data sets used #
+DataSets <- c(trng_ds, tstng_ds)
+
+# The number of datasets to examine #
+numDS <- length(DataSets)
+
+# This for loop checks to see if both of the data set files exists. If not, it #
+# downloads the file. #
+for(i in 1:numDS){
+    if ((!file.exists(DataSets[i]))){
+        download.file(url = ds_paths[i], destfile = DataSets[i] , method = "curl")
+    }
+}
+
+# The names of the data set data frame objects. #
+DS_names <- c("trng", "tstng")
+
+# This for loops assigns the respective data frames the names listed above. #
+for(j in 1:numDS){
+        assign(DS_names[j], read.csv(DataSets[j], header = TRUE))
+}
+```
+
+Next, basic exploratory analysis is performed.
+
+```{r Preliminary Analysis, results = "hide"}
+# Perform basic exploratory analysis #
+str(trng)
+str(tstng)
+```
+
+The output of the code above was omitted because of length consideration.  However, 
+upon examining the structures of both the testing and training data frames, 
+there are many variables that are populated with NAs.  Since missing data can 
+drastically impact a machine learning model, these columns will be removed 
+accordingly. From inspection of the structures of the data frames, it is 
+apparent that the first seven variables of the data sets are unnecessary for any 
+machine learning model chosen; therefore, these columns will also be eliminated.
+In addition it is also important to remove the near zero covariates of the 
+training data frame.
+
+## Data Transformation
+
+It is necessary to prepare the data to be usable by the various machine learning 
+models.  To that end, these are the preparation steps taken:
+
+```{r Data Transformation}
+# Removing the NAs from the training and testing data frames #
+trng <- trng[, colSums(is.na(trng)) == 0]
+tstng <- tstng[, colSums(is.na(tstng)) == 0]
+
+# Removing the first seven columns #
+trng <- trng[, -c(1:7)]
+tstng <- tstng[, -c(1:7)]
+
+# Identifying the near zero covariates of the training data frame #
+nv <- nearZeroVar(trng)
+
+# Removing the above referenced covariates from the data frame #
+trng <- trng[, -nv]
+
+# Coercing the classe variable into a factor. #
+trng$classe <- as.factor(trng$classe)
+
+# Checking the dimensions of the data sets. #
+dim(trng)
+dim(tstng)
+```
+
+Since the classe variable is being used as the response variable, it is more 
+convenient to coerce this variable into a factor object.  Also, the testing and 
+training data frames have been pare down to 53 variables.
+
+## Data Splitting
+
+The next step is to prepare the training data frame for both testing and testing
+by the various machine learning models, and thus the following is done:
+
+```{r Testing & Training Preparation}
+# Setting seed for reproducibility #
+set.seed(1973)
+
+# Creates training set that indexes 80% of the data #
+inTrain <- createDataPartition(y = trng$classe, p = 0.8, list = FALSE)
+
+# subset the training object into training data set #
+trngDS <- trng[inTrain, ]
+
+# subset the rest into testing data set #
+tstngDS <- trng[-inTrain, ]
+```
+
+## Visualization
+
+To gain a better understanding of the predictors of the training data set, the 
+featurePlot() function of the Caret package is used:
+
+```{r Visualization, fig.width = 13.177, fig.height = 8.3854}
+# Graphical representation of predictor variables' importance to response #
+# variable #
+featurePlot(x = trngDS[, 1:52], 
+            y = trngDS$classe, 
+            plot = "density",
+            strip=strip.custom(par.strip.text=list(cex=.7)),
+            scales = list(x = list(relation="free"), 
+                          y = list(relation="free")))
+```
+
+To extract which variables are most important from a density feature plot, it is 
+necessary to discern the significant difference in the 5 classes in terms of 
+height(kurtosis) and placement(skewness).  However, this isn't easy to do 
+visually.  Therefore, we can perform a recursive feature elimination courtesy of 
+the Caret package.
+
+```{r Recursive Feature Elimination}
+options(warn=-1)
+
+subsets <- c(1:5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 52)
+
+ctrl <- rfeControl(functions = rfFuncs,
+                   method = "repeatedcv",
+                   number = 5,
+                   repeats = 5,
+                   verbose = FALSE,
+                   allowParallel = TRUE)
+
+mdlProfile <- rfe(x = trngDS[, 1:52], y = trngDS$classe,
+                  sizes = subsets,
+                  rfeControl = ctrl)
+
+mdlProfile
+```
+
+From the above output, a model size of 5 with roll_belt, yaw_belt, 
+magnet_dumbbell_z, pitch_belt, and magnet_dumbbell_y seems to achieve the 
+optimal accuracy.
+
+## Selecting Cross Validation Methods
+
+Before commencing with the modeling, some selections need to be made in terms 
+of the cross validation methods to use.
+
+Most of the models will use the repeated k-fold cross validation 
+method because it works well for both classification and regression machine 
+learning models.  However, rpart() uses k-fold cross validation, although the 
+number of cross validations can be set.  
+
+```{r Cross Validations}
+# Adjusts the number of cross validations for Recursive Partition & Regression #  
+# Trees Model #
+rpartCtrl <- rpart.control(xval = 5)
+
+# Repeated k-fold Cross Validation Method #
+fitCtrl <- trainControl(method = "repeatedcv",  
+                        number = 5,
+                        repeats = 5,
+                        savePredictions = 'final',  
+                        classProbs = TRUE,          
+                        summaryFunction=multiClassSummary,
+                        allowParallel = TRUE
+                        )
+```
+
+## Machine Learning Model Comparisons
+
+The models that are selected to be compared are recursive partition and 
+regression trees, random forest, and generalized boosted regression models.  The 
+most accurate of the three models will be used to make the prediction on 
+the testing data frame that has been set aside.
+
+### Training on rpart() Model & Predicting on Test Data Set
+
+```{r Training & Prediction for rpart()}
+# Training on Recursive Partition and Regression Trees Model #
+mdl_rpart <- rpart(classe ~ ., data = trngDS, 
+                   control = rpartCtrl)
+
+# Plots the trained rpart() model as a dendrogram #
+fancyRpartPlot(mdl_rpart)
+
+# Predicted results from testing data Set #
+predicted_rpart <- predict(mdl_rpart, newdata = tstngDS, type = "class")
+
+# Produce Confusion Matrix to compare the predicted vs actuals of testing data #
+# set  #
+cm_rpart <- confusionMatrix(reference = tstngDS$classe, data = predicted_rpart,
+                            mode = "everything")
+
+# Recursive Partition and Regression Trees Model Confusion Matrix Summary #
+cm_rpart
+```
+
+### Training on Random Forest Model & Predicting on Test Data Set
+
+```{r Training & Prediction for rf()}
+# Training on Random Forrest Model#
+mdl_rf <- train(classe ~ ., data = trngDS, method = "rf", trControl = fitCtrl)
+
+# Plot Randomly Selected Predictors vs Accuracy #
+plot(mdl_rf, main = "Model Accuracies with Random Forest")
+
+# Predicted results from testing data set #
+predicted_rf <- predict(mdl_rf, newdata = tstngDS)
+
+# Produce Confusion Matrix to compare the predicted vs actuals of testing data #
+# set  #
+cm_rf <- confusionMatrix(reference = tstngDS$classe, data = predicted_rf, 
+                         mode = "everything")
+
+# Random Forest Model Confusion Matrix Summary #
+cm_rf
+
+# Accuracy of the Random Forest Model on testing data set #
+accuracy <- as.numeric(cm_rf$overall["Accuracy"])
+
+# Out of sample error for Random Forest Model on testing data set#
+ose <- 1 - accuracy
+
+# Change both of the values above into scientific notation #
+accuracy <- scientific(accuracy, digits = 4)
+ose <- scientific(ose, digits = 4)
+```
+
+### Training on gbm() Model and Predicting on Test Data Set
+
+```{r Training & Prediction for gbm()}
+# Training on Generalized Boosted Regression Models #
+mdl_gbm <- train(classe ~ ., data = trngDS, method = "gbm", trControl = fitCtrl,
+                 verbose = FALSE)
+
+# Plot Boosting Iterations vs Accuracy
+plot(mdl_gbm, 
+     main = "Model Accuracies with Generalized Boosted Regression Models")
+
+# Predicted results from testing data set #
+predicted_gbm <- predict(mdl_gbm, newdata = tstngDS)
+
+# Produce Confusion Matrix to compare the predicted vs actuals of testing data #
+# set  #
+cm_gbm <- confusionMatrix(reference = tstngDS$classe, data = predicted_gbm, 
+                         mode = "everything")
+
+# Generalized Boosted Regression Models Confusion Matrix Summary #
+cm_gbm
+```
+
+From the confusion matrix summary of all three model, it is apparent that the 
+random forest model is most accurate and thus the model to use in making the 
+prediction on the testing data frame that was set aside, with an accuracy 
+of `r accuracy` and an out of sample error of `r ose`.
+
+### Prediction on Test Data Set Put Aside
+
+```{r Prediction}
+# Uses the trained Random Forest Model to predict the testing data set that was # 
+# put aside. #
+predictions <- predict(mdl_rf, newdata = tstng)
+
+# Display the predictions made on the testing data set that was put aside #
+predictions
+```
